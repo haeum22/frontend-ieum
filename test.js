@@ -1,7 +1,7 @@
 (async function () {
   // ① 경로 자동 계산(현재 test.html 기준 상대경로)
   const BASE = location.pathname.replace(/\/[^/]*$/, ""); // /.../test.html -> /.../
-  const DATA_URL = `${BASE}/data/qsccII.json`;            // /.../data/qsccII.json
+  const DATA_URL = `${BASE}/data/qsccII.json`;            // /.../data/qsccII.json
   const STORAGE_KEY = "qsccii_v1";
   // 체질별 포인트 컬러
   const TYPE_COLOR = {
@@ -29,9 +29,9 @@
       {
         id: 2, title: "Q2.", text: "당신의 체형은 어떻습니까?",
         options: [
-          { id: "A", label: "뚱뚱한 편이다", image: { src: `${BASE}/public/images/test/q2_A.png` }, scores: {"태음인":2} },
-          { id: "B", label: "보통이다",     image: { src: `${BASE}/public/images/test/q2_B.png` }, scores: {"소양인":1,"소음인":1} },
-          { id: "C", label: "마른 편이다",   image: { src: `${BASE}/public/images/test/q2_C.png` }, scores: {"소양인":2,"소음인":2} }
+          { id: "A", label: "뚱뚱한 편이다",     image: { src: `${BASE}/public/images/test/q2_A.png` }, scores: {"태음인":2} },
+          { id: "B", label: "보통이다",     image: { src: `${BASE}/public/images/test/q2_B.png` }, scores: {"소양인":1,"소음인":1} },
+          { id: "C", label: "마른 편이다",   image: { src: `${BASE}/public/images/test/q2_C.png` }, scores: {"소양인":2,"소음인":2} }
         ],
         required: true
       }
@@ -98,13 +98,13 @@ function renderBingo(type){
   const state = { data: null, idx: 0, answers: {} };
 
   // DOM
-  const qcard  = document.getElementById("qcard");
+  const qcard  = document.getElementById("qcard");
   const qtitle = document.getElementById("qtitle");
-  const qtext  = document.getElementById("qtext");
+  const qtext  = document.getElementById("qtext");
   const optsEl = document.getElementById("opts");
-  const prev   = document.getElementById("prev");
-  const next   = document.getElementById("next");
-  const pager  = document.getElementById("pager");
+  const prev   = document.getElementById("prev");
+  const next   = document.getElementById("next");
+  const pager  = document.getElementById("pager");
   const result = document.getElementById("result");
 
   // ===== 기록 삭제(초기화) =====
@@ -113,14 +113,127 @@ function renderBingo(type){
     state.answers = {};
   }
 
+  // **** 새로운 채점/판별 로직 추가 ****
+  // 1) 문항→하위척도 매핑 (Table 8 요지)
+  const SCALES = {
+    태양1: new Set(["2b","2c","5c","6b","8b","11","13","14","16","19","24","28","34","35","38","48","49","51"]),
+    태양2: new Set(["1b","4d","9c","10a","11","12","31"]), // 2점
+    소양1: new Set(["1c","2b","2c","3a","5c","6c","7c","9c","10a","11","12","13","14","15","19","26","28","33","35","38","42","43","44"]),
+    소양2: new Set(["1b","16","24"]), // 2점
+    태음1: new Set(["1a","2a","3a","5a","6a","7c","8b","9a","10a","11","11d","12","14","22","23","26","29","30","35","39","41","44","50"]),
+    태음2: new Set([]),
+    소음1: new Set(["1c","4d","6b","9b","12","22","23","29","30","37","41","46"]),
+    소음2: new Set(["2c","5b","10b","11","17","31","44"]) // 2점
+  };
+
+  // 2) 가중치 규칙 (요청대로: 태양2/소양2/소음2만 2점)
+  const WEIGHT = { 태양1:1, 태양2:2, 소양1:1, 소양2:2, 태음1:1, 태음2:1, 소음1:1, 소음2:2 };
+
+  // 3) 판별식 계수 (Table 10)
+  const DISCRIM = {
+    태양: { coef:{태양:0.828,  소양:-0.07021, 태음:0.533,  소음:0.373}, const:-13.638 },
+    소양: { coef:{태양:0.352,  소양:0.410,    태음:0.500,  소음:0.449}, const:-11.809 },
+    태음: { coef:{태양:0.361,  소양:0.03093,  태음:1.113,  소음:0.349}, const:-12.427 },
+    소음: { coef:{태양:0.339,  소양:0.164,    태음:0.644,  소음:0.649}, const:-12.379 }
+  };
+
+  // 보조: 질문id+옵션id -> "3a" 같은 문항코드로
+  function toItemCode(questionId, optionId) {
+    const num = String(questionId).replace(/\D/g, "");
+    return `${num}${String(optionId).toLowerCase()}`;
+  }
+
+  // (A) schema.questions[*].options[*].scores 채우기
+  // scores는 요청하신 대로 {태양인, 소양인, 소음인, 태음인} 순서/이름으로 기록
+  function annotateOptionScores(schema) {
+    for (const q of schema.questions ?? []) {
+      for (const opt of q.options ?? []) {
+        const empty = !opt.scores || Object.keys(opt.scores).length === 0;
+        if (!empty) continue;
+
+        const code = toItemCode(q.id, opt.id);
+        // 하위척도 적중 확인
+        const sub = {태양1:0,태양2:0,소양1:0,소양2:0,태음1:0,태음2:0,소음1:0,소음2:0};
+        for (const s in SCALES) if (SCALES[s].has(code)) sub[s] += WEIGHT[s];
+        // 상위 4척도로 합산
+        const top = {
+          태양: sub.태양1 + sub.태양2,
+          소양: sub.소양1 + sub.소양2,
+          태음: sub.태음1 + sub.태음2,
+          소음: sub.소음1 + sub.소음2
+        };
+        // 옵션에 주입 (표시 라벨은 …인)
+        opt.scores = {
+          "태양인": top.태양,
+          "소양인": top.소양,
+          "소음인": top.소음,
+          "태음인": top.태음
+        };
+      }
+    }
+    return schema;
+  }
+
+  // (B) 응답으로 점수 합산 → 판별식 계산 → 최종 체질
+  function evaluate(schema, answers) {
+    // 응답 코드 집합 만들기
+    const codes = new Set(Object.entries(answers).map(([qId, oId]) => toItemCode(qId, oId)));
+    // 8개 하위척도
+    const sub8 = {태양1:0,태양2:0,소양1:0,소양2:0,태음1:0,태음2:0,소음1:0,소음2:0};
+    for (const code of codes) {
+      for (const s in SCALES) if (SCALES[s].has(code)) sub8[s] += WEIGHT[s];
+    }
+    // 4개 상위척도
+    const top4 = {
+      태양: sub8.태양1 + sub8.태양2,
+      소양: sub8.소양1 + sub8.소양2,
+      태음: sub8.태음1 + sub8.태음2,
+      소음: sub8.소음1 + sub8.소음2
+    };
+    // 판별식 값
+    const d = {};
+    for (const k in DISCRIM) {
+      const {coef, const: c} = DISCRIM[k];
+      d[k] = coef.태양*top4.태양 + coef.소양*top4.소양 + coef.태음*top4.태음 + coef.소음*top4.소음 + c;
+    }
+    // 최종 체질 (동률 시 schema.scoring.tieBreaker 사용)
+    const mapK2Label = {태양:"태양인", 소양:"소양인", 태음:"태음인", 소음:"소음인"};
+    const entries = Object.entries(d).sort((a,b)=>b[1]-a[1]);
+    const maxVal = entries.length > 0 ? entries[0][1] : -Infinity;
+    const tiedKeys = entries.filter(([_,v])=>v===maxVal).map(([k])=>k);
+    let finalKey = tiedKeys[0];
+    if (tiedKeys.length > 1) {
+      const pref = schema?.scoring?.tieBreaker ?? ["태양인","태음인","소양인","소음인"];
+      const label2Key = {"태양인":"태양","태음인":"태음","소양인":"소양","소음인":"소음"};
+      for (const lab of pref) {
+        const k = label2Key[lab];
+        if (tiedKeys.includes(k)) { finalKey = k; break; }
+      }
+    }
+
+    // 백분율 계산을 위한 점수 합계(판별식 값으로 백분율을 계산하면 의미가 없어 상위척도 점수를 사용)
+    const totalScore = Object.values(top4).reduce((sum, score) => sum + score, 0);
+    const percentages = Object.fromEntries(
+      Object.keys(top4).map(k => [
+        mapK2Label[k],
+        totalScore > 0 ? Math.round((top4[k] / totalScore) * 100) : 0
+      ])
+    );
+    
+    return { winner: mapK2Label[finalKey], percentages: percentages };
+  }
+  // **** 새로운 로직 끝 ****
+
   // 데이터 로드(에러 안전)
   try {
     const res = await fetch(DATA_URL, { cache: "no-cache" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
+    // ✅ 데이터 로드 후 점수 자동 주입
+    state.data = annotateOptionScores(state.data);
   } catch (e) {
     console.warn("[QSCC] 질문 JSON 로드 실패 → 샘플 데이터로 진행:", e?.message || e);
-    state.data = FALLBACK;
+    state.data = annotateOptionScores(FALLBACK);
   }
 
   // 저장 복구
@@ -139,22 +252,10 @@ function renderBingo(type){
 
   // 체질 키, 합계, 저장
   const TYPES = () => (state.data && state.data.types) ? state.data.types : [];
-  function calcTotals() {
-    const totals = Object.fromEntries(TYPES().map(t => [t, 0]));
-    (state.data.questions || []).forEach(q => {
-      const chosen = state.answers[q.id];
-      if (!chosen) return;
-      const opt = (q.options || []).find(o => o.id === chosen);
-      if (!opt || !opt.scores) return;
-      TYPES().forEach(t => totals[t] += Number(opt.scores[t] || 0));
-    });
-    return totals;
-  }
+  
+  // 기존 calcTotals 함수는 사용하지 않으므로 제거하거나 주석 처리합니다.
   function save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      answers: state.answers,
-      totals: calcTotals()
-    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ answers: state.answers }));
   }
 
   // ===== 팝업 유틸 =====
@@ -184,9 +285,8 @@ function renderBingo(type){
   // ===== 미응답 검사 → 결과 전환 제어 =====
   function getUnansweredList() {
     const arr = [];
-    (state.data.questions || []).forEach((q, i) => {
-      const id = (typeof q.id === "number" || typeof q.id === "string") ? q.id : (i + 1);
-      if (!state.answers[q.id]) arr.push(Number(id));
+    (state.data.questions || []).forEach((q) => {
+      if (!state.answers[q.id]) arr.push(Number(q.id));
     });
     return arr.sort((a, b) => a - b);
   }
@@ -345,7 +445,7 @@ function renderOptions(q){
     const descWrap = document.createElement("ul");
     descWrap.className = "opt-desc";
     const lines = Array.isArray(opt.desc) ? opt.desc
-                  : typeof opt.desc === "string" ? opt.desc.split(/\n+/) : [];
+                   : typeof opt.desc === "string" ? opt.desc.split(/\n+/) : [];
     lines.forEach(t => {
       if (!t) return;
       const li = document.createElement("li");
@@ -385,7 +485,6 @@ function renderOptions(q){
   });
 }
 
-  // 진행도 점
   // 진행도 점 (10문항씩 페이징)
 function renderPager() {
   const tot = total();
@@ -393,8 +492,8 @@ function renderPager() {
 
   // 현재 문항이 속한 10개 묶음 계산
   const group = Math.floor((cur - 1) / 10);
-  const start = group * 10 + 1;              // 이 묶음의 시작 번호 (1, 11, 21, …)
-  const end   = Math.min(start + 9, tot);    // 이 묶음의 끝 번호
+  const start = group * 10 + 1;              // 이 묶음의 시작 번호 (1, 11, 21, …)
+  const end   = Math.min(start + 9, tot);    // 이 묶음의 끝 번호
 
   pager.innerHTML = "";
 
@@ -402,11 +501,11 @@ function renderPager() {
   const prevB = document.createElement("button");
   prevB.className = "page-arrow";
   prevB.textContent = "‹";
-  prevB.disabled = start <= 1;               // 첫 묶음이면 비활성
+  prevB.disabled = start <= 1;               // 첫 묶음이면 비활성
   prevB.onclick = () => {
     if (start > 1) {
-      const newStart = start - 10;           // 이전 묶음의 시작 번호
-      state.idx = newStart - 1;              // 해당 묶음의 첫 문제로 이동
+      const newStart = start - 10;           // 이전 묶음의 시작 번호
+      state.idx = newStart - 1;              // 해당 묶음의 첫 문제로 이동
       setHash();
       renderQuestion();
     }
@@ -428,11 +527,11 @@ function renderPager() {
   const nextB = document.createElement("button");
   nextB.className = "page-arrow";
   nextB.textContent = "›";
-  nextB.disabled = end >= tot;               // 마지막 묶음이면 비활성
+  nextB.disabled = end >= tot;               // 마지막 묶음이면 비활성
   nextB.onclick = () => {
     if (end < tot) {
-      const newStart = start + 10;           // 다음 묶음의 시작 번호(11, 21, …)
-      state.idx = newStart - 1;              // 그 묶음의 첫 문제로 이동
+      const newStart = start + 10;           // 다음 묶음의 시작 번호(11, 21, …)
+      state.idx = newStart - 1;              // 그 묶음의 첫 문제로 이동
       setHash();
       renderQuestion();
     }
@@ -441,53 +540,22 @@ function renderPager() {
 }
 
 
-  // ===== 결과 계산(최다 득점 + 백분율) =====
-  function computeResult() {
-    const types = state.data.types || []; // ["태양인","태음인","소양인","소음인"]
-    const totals = Object.fromEntries(types.map(t => [t, 0]));
-
-    // 선택된 선지들의 점수 합산
-    (state.data.questions || []).forEach(q => {
-      const chosen = state.answers[q.id];
-      if (!chosen) return;
-      const opt = (q.options || []).find(o => o.id === chosen);
-      if (!opt || !opt.scores) return;
-      types.forEach(t => { totals[t] += Number(opt.scores[t] || 0); });
-    });
-
-    // 최다 득점 체질
-    const max = types.length ? Math.max(...types.map(t => totals[t])) : 0;
-    const ties = types.filter(t => totals[t] === max);
-    const pref = state.data.scoring?.tieBreaker || types;
-    const winner = ties.length
-      ? (ties.length > 1 ? (pref.find(t => ties.includes(t)) || ties[0]) : ties[0])
-      : null;
-
-    // 백분율(정수 반올림)
-    const sum = Object.values(totals).reduce((a, b) => a + b, 0);
-    const percentages = Object.fromEntries(
-      types.map(t => [t, sum > 0 ? Math.round((totals[t] / sum) * 100) : 0])
-    );
-
-    return { winner, totals, percentages };
-  }
-
   // === 결과 퍼센트 도넛 차트(SVG) ===
 function donutChart(percentages) {
   // 표시 순서와 색
-  const ORDER  = ["소음인", "태음인", "소양인", "태양인"];
-  const COLOR  = {
-    "소음인": "#67D2C6",  // teal
-    "태음인": "#66B4F1",  // blue
-    "소양인": "#F6D372",  // yellow
-    "태양인": "#FF7C9C"   // pink
+  const ORDER  = ["소음인", "태음인", "소양인", "태양인"];
+  const COLOR  = {
+    "소음인": "#67D2C6",  // teal
+    "태음인": "#66B4F1",  // blue
+    "소양인": "#F6D372",  // yellow
+    "태양인": "#FF7C9C"   // pink
   };
 
   // 원형 파라미터
   const SIZE = 220;
-  const R    = 80;
-  const SW   = 28;
-  const CX   = SIZE/2, CY = SIZE/2;
+  const R    = 80;
+  const SW   = 28;
+  const CX   = SIZE/2, CY = SIZE/2;
   const CIRC = 2*Math.PI*R;
 
   // 각 체질의 호 그리기
@@ -497,11 +565,11 @@ function donutChart(percentages) {
     const len = (pct/100) * CIRC;
     const circle = `
       <circle r="${R}" cx="${CX}" cy="${CY}" fill="transparent"
-              stroke="${COLOR[t]}" stroke-width="${SW}"
-              stroke-dasharray="${len} ${CIRC}"
-              stroke-dashoffset="${-offset}"
-              stroke-linecap="butt"
-              transform="rotate(-90 ${CX} ${CY})"></circle>`;
+                    stroke="${COLOR[t]}" stroke-width="${SW}"
+                    stroke-dasharray="${len} ${CIRC}"
+                    stroke-dashoffset="${-offset}"
+                    stroke-linecap="butt"
+                    transform="rotate(-90 ${CX} ${CY})"></circle>`;
     offset += len;
     return circle;
   }).join("");
@@ -529,16 +597,11 @@ function donutChart(percentages) {
   `;
 }
 
+
   // ===== 결과 표시 =====
 function renderResult() {
-  const { winner, totals, percentages } = computeResult();
-
-  const types  = state.data.types || [];
-  const sorted = [...types].sort((a, b) => (percentages[b] || 0) - (percentages[a] || 0));
-  const pctLine = sorted.map(t => `${t}: ${percentages[t]}%`).join(" · ");
-
-  // 도넛 차트 (네가 이미 추가한 함수 그대로 사용)
-  const chart = donutChart(percentages);
+  // ✅ 새로운 evaluate 함수로 결과 계산
+  const { winner, percentages } = evaluate(state.data, state.answers);
 
   // ★ 체질명에 색 입히기
   const color = TYPE_COLOR[winner] || "#111";
@@ -546,24 +609,10 @@ function renderResult() {
     ? `<span style="color:${color}; font-weight:900;">“${winner}”</span>`
     : `“-”`;
 
-  qcard.hidden = true; 
-  result.hidden = false;
-  result.innerHTML = `
-    <div class="result-title" style="text-align:center">
-      당신은 ${winnerHTML} 입니다.
-    </div>
+  // 도넛 차트
+  const chart = donutChart(percentages);
 
-    ${chart}
-
-    <div style="display:flex;gap:12px;justify-content:center;margin-top:16px">
-      <a class="btn btn-prev" href="./test.html#q=1" data-reset="true" id="restartBtn"
-         style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">처음부터 다시</a>
-      <a class="btn btn-next" href="./whatisqscc.html" data-reset="true"
-         style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">솔루션 보기</a>
-    </div>
-  `;
-
-   //체질 빙고 HTML 생성
+  // 체질 빙고 HTML 생성
   const bingoHTML = renderBingo(winner);
 
   qcard.hidden = true; 
@@ -575,13 +624,11 @@ function renderResult() {
 
     ${chart}
 
-    ${bingoHTML}   <!-- 도넛과 버튼 사이에 빙고 넣기 -->
-
-    <div style="display:flex;gap:12px;justify-content:center;margin-top:18px">
+    ${bingoHTML}   <div style="display:flex;gap:12px;justify-content:center;margin-top:18px">
       <a class="btn btn-prev" href="./test.html#q=1" data-reset="true" id="restartBtn"
-         style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">처음부터 다시</a>
+        style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">처음부터 다시</a>
       <a class="btn btn-next" href="./whatisqscc.html" data-reset="true"
-         style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">솔루션 보기</a>
+        style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">솔루션 보기</a>
     </div>
   `;
   
@@ -609,7 +656,7 @@ function renderResult() {
     qcard.hidden = false; result.hidden = true;
 
     qtitle.textContent = q.title || `Q${q.id}.`;
-    qtext.textContent  = q.text || "";
+    qtext.textContent  = q.text || "";
 
     renderOptions(q);
     renderPager();
