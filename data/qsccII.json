@@ -30,7 +30,7 @@
             "src": "./images/qscc/test/1a.jfif",
             "alt": "체격이 큰 편이다."
           },
-          "scores": {"태양인": 17, "소양인": 9, "태음인": 46, "소음인": 12}
+          "scores": {}
         },
         {
           "id": "B",
@@ -40,7 +40,7 @@
             "src": "./images/qscc/test/1b.jfif",
             "alt": "보통이다"
           },
-          "scores": {"태양인": 73, "소양인": 67, "태음인": 43, "소음인": 50}
+          "scores": {}
         },
         {
           "id": "C",
@@ -50,7 +50,7 @@
             "src": "./images/qscc/test/1c.jfif",
             "alt": "체격이 작은 편이다."
           },
-          "scores": {"태양인": 8, "소양인": 21, "태음인": 9, "소음인": 36}
+          "scores": {}
         }
       ],
       "required": true
